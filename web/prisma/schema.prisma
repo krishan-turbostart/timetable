@@ -1,0 +1,214 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────
+
+enum ScheduleStatus {
+  DRAFT
+  SOLVED
+  FINALIZED
+}
+
+enum CourseType {
+  LECTURE
+  LAB
+}
+
+enum RoomType {
+  LECTURE
+  LAB
+}
+
+enum FacultyType {
+  FULLTIME
+  PARTTIME
+  GUEST
+}
+
+// ─── Schedule & TimeConfig ───────────────────────────────
+
+model Schedule {
+  id          String         @id @default(cuid())
+  name        String
+  semester    String
+  status      ScheduleStatus @default(DRAFT)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  timeConfig  TimeConfig?
+  assignments Assignment[]
+  solverRuns  SolverRun[]
+}
+
+model TimeConfig {
+  id            String   @id @default(cuid())
+  scheduleId    String   @unique
+  schedule      Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  days          String[] // ["MON","TUE","WED","THU","FRI"]
+  startTime     String   // "09:00"
+  endTime       String   // "17:00"
+  slotDuration  Int      // minutes, e.g. 60
+  breakStart    String   // "12:00"
+  breakEnd      String   // "13:00"
+}
+
+// ─── Courses ─────────────────────────────────────────────
+
+model Course {
+  id               String          @id @default(cuid())
+  code             String          @unique
+  name             String
+  type             CourseType      @default(LECTURE)
+  hoursPerWeek     Int             // total hours per week
+  sessionsPerWeek  Int             // how many separate sessions
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  sections         Section[]
+  facultyCourses   FacultyCourse[]
+}
+
+model Section {
+  id        String   @id @default(cuid())
+  name      String   // e.g. "A", "B"
+  courseId   String
+  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  labGroups      LabGroup[]
+  batchSections  BatchSection[]
+  assignments    Assignment[]
+
+  @@unique([courseId, name])
+}
+
+model LabGroup {
+  id        String   @id @default(cuid())
+  name      String   // e.g. "G1", "G2"
+  sectionId String
+  section   Section  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  assignments Assignment[]
+
+  @@unique([sectionId, name])
+}
+
+// ─── Faculty ─────────────────────────────────────────────
+
+model Faculty {
+  id           String       @id @default(cuid())
+  name         String
+  email        String       @unique
+  type         FacultyType  @default(FULLTIME)
+  maxHours     Int          @default(20) // max teaching hours per week
+  availability Json?        // {"MON":[0,1,2,3],"TUE":[0,1,2]}
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  facultyCourses FacultyCourse[]
+  assignments    Assignment[]
+}
+
+model FacultyCourse {
+  id        String  @id @default(cuid())
+  facultyId String
+  courseId   String
+  faculty   Faculty @relation(fields: [facultyId], references: [id], onDelete: Cascade)
+  course    Course  @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@unique([facultyId, courseId])
+}
+
+// ─── Batches ─────────────────────────────────────────────
+
+model Batch {
+  id           String   @id @default(cuid())
+  name         String   @unique
+  studentCount Int      @default(60)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  batchSections BatchSection[]
+  assignments   Assignment[]
+}
+
+model BatchSection {
+  id        String  @id @default(cuid())
+  batchId   String
+  sectionId String
+  batch     Batch   @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  section   Section @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, sectionId])
+}
+
+// ─── Rooms ───────────────────────────────────────────────
+
+model Room {
+  id           String   @id @default(cuid())
+  name         String   @unique
+  type         RoomType @default(LECTURE)
+  capacity     Int
+  availability Json?    // {"MON":[0,1,2,3],"TUE":[0,1,2]}
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  assignments Assignment[]
+}
+
+// ─── Solver Output ───────────────────────────────────────
+
+model Assignment {
+  id          String   @id @default(cuid())
+  scheduleId  String
+  schedule    Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  sectionId   String
+  section     Section  @relation(fields: [sectionId], references: [id])
+  labGroupId  String?
+  labGroup    LabGroup? @relation(fields: [labGroupId], references: [id])
+  facultyId   String
+  faculty     Faculty  @relation(fields: [facultyId], references: [id])
+  roomId      String
+  room        Room     @relation(fields: [roomId], references: [id])
+  batchId     String
+  batch       Batch    @relation(fields: [batchId], references: [id])
+
+  day         String   // "MON", "TUE", etc.
+  slotIndex   Int      // 0-based slot index within the day
+  duration    Int      // number of slots this assignment spans
+
+  // Denormalized for fast rendering
+  courseCode  String
+  courseName  String
+  startTime   String   // "09:00"
+  endTime     String   // "10:00"
+
+  createdAt   DateTime @default(now())
+
+  @@index([scheduleId, day])
+  @@index([scheduleId, batchId])
+  @@index([scheduleId, facultyId])
+  @@index([scheduleId, roomId])
+}
+
+model SolverRun {
+  id          String   @id @default(cuid())
+  scheduleId  String
+  schedule    Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  status      String   // "RUNNING", "SUCCESS", "FAILED", "INFEASIBLE"
+  startedAt   DateTime @default(now())
+  finishedAt  DateTime?
+  solveTimeMs Int?
+  totalScore  Float?
+  diagnostics Json?    // { hardScore, softScore, reasons[] }
+
+  @@index([scheduleId])
+}
